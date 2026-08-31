@@ -1,0 +1,13 @@
+# Desktop minimum: no Chroma/BGE download is required to launch this entry.
+openai>=1.50.0
+zhipuai>=2.0.0
+langgraph>=0.2.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+numpy>=1.26.0
+sounddevice>=0.4.6
+soundfile>=0.12.1
+openai-whisper>=20240930
+faster-whisper>=1.0.0
+edge-tts>=6.1.0
+pygame>=2.5.0
