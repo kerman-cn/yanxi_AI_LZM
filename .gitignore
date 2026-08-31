@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+.venv/
+.idea/
+__pycache__/
+*.pyc
+launch_error.log
+outputs/
+runtime/
+/历史归档/
+/言犀AI管家_安卓录音版.apk

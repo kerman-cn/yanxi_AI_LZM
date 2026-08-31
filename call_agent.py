@@ -17,19 +17,27 @@ from dataclasses import dataclass, field
 
 from langchain_community.document_loaders import TextLoader
 from langchain_chroma import Chroma
-from langchain_community.embeddings import ZhipuAIEmbeddings
 from langchain_core.documents import Document
-from zhipuai import ZhipuAI
+from qwen_provider import (
+    QWEN_CHAT_MODEL,
+    QWEN_EMBEDDING_DIMENSIONS,
+    QWEN_EMBEDDING_MODEL,
+    QwenEmbeddings,
+    create_qwen_client,
+)
 
 # ===================== 全局配置 =====================
+BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR       = os.path.join(BASE_DIR, "data")
+RUNTIME_DIR    = os.path.join(BASE_DIR, "runtime")
+OUTPUT_DIR     = os.path.join(BASE_DIR, "outputs")
 WHISPER_MODEL   = "turbo"
 VOICE           = "zh-CN-XiaoxiaoNeural"
-OUTPUT_AUDIO    = "ai_reply.mp3"
+OUTPUT_AUDIO    = os.path.join(OUTPUT_DIR, "ai_reply.mp3")
 
-ZHIPU_API_KEY   = "df0ae242b97e4e92beed7bbed62f504e.bOfZ4YoZ3xYVlthi"
-LLM_MODEL       = "glm-4-flash"
-KNOWLEDGE_FILE  = "./knowledge.txt"
-CHROMA_DB_PATH  = "./chroma_call_db"
+LLM_MODEL       = QWEN_CHAT_MODEL
+KNOWLEDGE_FILE  = os.path.join(DATA_DIR, "knowledge.txt")
+CHROMA_DB_PATH  = os.path.join(RUNTIME_DIR, "chroma_call_db_qwen")
 SIMILARITY_THRESHOLD = 0.90
 
 DEFAULT_LOCATION   = "北门"
@@ -254,7 +262,7 @@ class DeepSceneAnalyzer:
 }
 """
 
-    def __init__(self, client: ZhipuAI):
+    def __init__(self, client):
         self.client = client
 
     def analyze(self, call_text: str, rag_hint: str = "") -> dict:
@@ -269,6 +277,7 @@ class DeepSceneAnalyzer:
                 ],
                 temperature=0.1,
                 response_format={"type": "json_object"},
+                extra_body={"enable_thinking": False},
             )
             result = json.loads(resp.choices[0].message.content.strip())
             return result
@@ -390,7 +399,7 @@ class RiskControlAgent:
 }
 """
 
-    def __init__(self, client: ZhipuAI):
+    def __init__(self, client):
         self.client = client
 
     def assess(self, call_text: str, scene_analysis: dict, rag_hint: str = "") -> dict:
@@ -410,6 +419,7 @@ class RiskControlAgent:
                 ],
                 temperature=0.1,
                 response_format={"type": "json_object"},
+                extra_body={"enable_thinking": False},
             )
             result = json.loads(resp.choices[0].message.content.strip())
             result = self._fix_risk(call_text, result)
@@ -541,7 +551,7 @@ class BusinessProcessAgent:
 }}
 """
 
-    def __init__(self, client: ZhipuAI):
+    def __init__(self, client):
         self.client = client
 
     def process(self, call_text: str, scene_analysis: dict, rag_hint: str = "") -> dict:
@@ -561,6 +571,7 @@ class BusinessProcessAgent:
                 ],
                 temperature=0.4,
                 response_format={"type": "json_object"},
+                extra_body={"enable_thinking": False},
             )
             result = json.loads(resp.choices[0].message.content.strip())
             result["reply_content"] = self._fix_reply(call_text, result["reply_content"])
@@ -627,7 +638,7 @@ class ManualTransferAgent:
 }
 """
 
-    def __init__(self, client: ZhipuAI):
+    def __init__(self, client):
         self.client = client
 
     def transfer(self, call_text: str, context: dict = None) -> dict:
@@ -642,6 +653,7 @@ class ManualTransferAgent:
                 ],
                 temperature=0.2,
                 response_format={"type": "json_object"},
+                extra_body={"enable_thinking": False},
             )
             return json.loads(resp.choices[0].message.content.strip())
         except Exception as e:
@@ -747,6 +759,7 @@ class TTSEngine:
     def __init__(self, voice: str = VOICE, output_path: str = OUTPUT_AUDIO):
         self.voice = voice
         self.output_path = output_path
+        os.makedirs(os.path.dirname(os.path.abspath(self.output_path)), exist_ok=True)
         try:
             pygame.mixer.init()
         except pygame.error:
@@ -793,8 +806,8 @@ def init_system():
     if not os.path.exists(KNOWLEDGE_FILE):
         raise FileNotFoundError(f"找不到知识库：{KNOWLEDGE_FILE}")
 
-    print(" 初始化智谱 AI 客户端...")
-    client = ZhipuAI(api_key=ZHIPU_API_KEY)
+    print(f" 初始化通义千问客户端（{LLM_MODEL}）...")
+    client = create_qwen_client()
 
     print(" 构建通话规则向量库...")
     loader = TextLoader(KNOWLEDGE_FILE, encoding="utf-8")
@@ -814,10 +827,14 @@ def init_system():
             metadata={"call_type": parts[1].strip(), "handle_rule": parts[2].strip()},
         ))
 
-    embeddings = ZhipuAIEmbeddings(api_key=ZHIPU_API_KEY)
+    embeddings = QwenEmbeddings(client=client)
 
-    # 计算 knowledge.txt 的指纹，只有文件变化时才重建向量库
-    knowledge_hash = hashlib.md5(docs[0].page_content.encode()).hexdigest()
+    # Embedding 模型或维度改变时必须重建，防止混用不兼容的向量。
+    fingerprint_source = (
+        f"{QWEN_EMBEDDING_MODEL}:{QWEN_EMBEDDING_DIMENSIONS}\n"
+        f"{docs[0].page_content}"
+    )
+    knowledge_hash = hashlib.md5(fingerprint_source.encode()).hexdigest()
     hash_file = os.path.join(CHROMA_DB_PATH, ".knowledge_hash")
     need_rebuild = True
 
@@ -959,12 +976,21 @@ async def main():
 
 if __name__ == "__main__":
     # 依赖自动安装
-    required = ["whisper", "edge_tts", "pygame", "langchain", "langchain-community",
-                "langchain-chroma", "zhipuai", "chromadb"]
+    required = {
+        "whisper": "openai-whisper",
+        "openai": "openai",
+        "dotenv": "python-dotenv",
+        "edge_tts": "edge-tts",
+        "pygame": "pygame",
+        "langchain": "langchain",
+        "langchain_community": "langchain-community",
+        "langchain_chroma": "langchain-chroma",
+        "chromadb": "chromadb",
+    }
     missing = []
-    for pkg in required:
+    for module, pkg in required.items():
         try:
-            __import__(pkg.replace("-", "_"))
+            __import__(module)
         except ImportError:
             missing.append(pkg)
     if missing:

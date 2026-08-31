@@ -1,0 +1,12 @@
+# 言犀 AI 管家综合版完整依赖
+openai-whisper
+openai>=1.0
+python-dotenv
+edge-tts
+pygame
+chromadb
+langchain-community
+langchain-chroma
+sounddevice
+soundfile
+numpy
